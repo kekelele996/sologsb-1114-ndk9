@@ -5,7 +5,7 @@ import type { Cave, Segment, Sketch, Station } from '@/types'
 import { computeHorizontal, computeVertical } from '@/utils/survey'
 
 /** IndexedDB 数据结构版本号（升级迁移时使用） */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
@@ -30,7 +30,7 @@ class CaveSurveyDb extends Dexie {
       meta: 'key'
     })
     // v2：旧版测点记录缺少水平距/垂距，迁移时由斜距 + 倾角补齐
-    this.version(SCHEMA_VERSION)
+    this.version(2)
       .stores({
         caves: 'id, name, region, archived',
         segments: 'id, caveId, code, type',
@@ -48,6 +48,25 @@ class CaveSurveyDb extends Dexie {
             }
             if (!Number.isFinite(station.verticalDistance)) {
               station.verticalDistance = computeVertical(station.dip, station.slopeDistance)
+            }
+          })
+      })
+    // v3：测点按测量批次管理，旧记录以测量日期作为批次
+    this.version(SCHEMA_VERSION)
+      .stores({
+        caves: 'id, name, region, archived',
+        segments: 'id, caveId, code, type',
+        stations: 'id, segmentId, code, date, batch',
+        sketches: 'id, segmentId, code, mergeOrder',
+        meta: 'key'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table<Station, string>('stations')
+          .toCollection()
+          .modify((station) => {
+            if (!station.batch) {
+              station.batch = station.date || '未分批次'
             }
           })
       })
@@ -167,6 +186,7 @@ export async function seedDemoData(): Promise<void> {
       instrumentNo: 'SOKKIA-2',
       surveyor: '陆昀',
       date: today,
+      batch: today,
       isClosurePoint: false,
       note: '入口段，左壁有崩塌堆积'
     },
@@ -182,6 +202,7 @@ export async function seedDemoData(): Promise<void> {
       instrumentNo: 'SOKKIA-2',
       surveyor: '陆昀',
       date: today,
+      batch: today,
       isClosurePoint: true,
       note: '本段末站，已与 C-02 起点核对'
     }

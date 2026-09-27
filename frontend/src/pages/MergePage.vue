@@ -13,6 +13,7 @@ import { stationStore } from '@/stores/stationStore'
 import { sketchStore } from '@/stores/sketchStore'
 import { downloadCsv } from '@/utils/export'
 import { stakeToNumber } from '@/utils/survey'
+import { latestBatchStations } from '@/utils/batch'
 
 const CANVAS_W = 780
 const CANVAS_H = 300
@@ -78,10 +79,10 @@ watch(
   { immediate: true }
 )
 
-/** 洞段测点闭合差（拼合视图复用闭合差徽标） */
+/** 洞段测点闭合差（拼合视图复用闭合差徽标）：每个洞段只取最新一批，历史批次不参与 */
 const caveStations = computed(() =>
-  stationState.stations.filter((station) =>
-    caveSegments.value.some((segment) => segment.id === station.segmentId)
+  caveSegments.value.flatMap((segment) =>
+    latestBatchStations(stationState.stations.filter((station) => station.segmentId === segment.id))
   )
 )
 const { result: closureResult } = useClosureCheck(caveStations)

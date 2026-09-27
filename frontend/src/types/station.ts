@@ -20,6 +20,8 @@ export interface Station {
   surveyor: string
   /** 测量日期 */
   date: string
+  /** 测量批次（同一洞段复测时区分读数组；旧数据以测量日期为批次） */
+  batch: string
   /** 是否闭合点 */
   isClosurePoint: boolean
   note: string

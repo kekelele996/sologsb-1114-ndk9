@@ -10,6 +10,7 @@ import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
 import { sketchStore } from '@/stores/sketchStore'
 import { toRadians } from '@/utils/survey'
+import { listBatches, stationsOfBatch } from '@/utils/batch'
 import { uid } from '@/utils/id'
 
 const caveState = useStore(caveStore)
@@ -23,6 +24,8 @@ const PAD = 46
 
 const selectedCaveId = ref<string>(caveState.caves[0]?.id ?? '')
 const selectedSegmentId = ref<string>('')
+/** 当前查看的测量批次：草图折线只画该批次测点 */
+const selectedBatch = ref<string>('')
 const editingId = ref<string | null>(null)
 /** 草图朝向基准方位角：把洞段整体旋转到图纸正上方为前进方向 */
 const baseBearing = ref(0)
@@ -64,11 +67,40 @@ watch(
   { immediate: true }
 )
 
-const segmentStations = computed<Station[]>(() =>
+const segmentAllStations = computed<Station[]>(() =>
   stationState.stations
     .filter((station) => station.segmentId === selectedSegmentId.value)
     .sort((a, b) => Number((a.code.match(/\d+/) ?? ['0'])[0]) - Number((b.code.match(/\d+/) ?? ['0'])[0]))
 )
+
+/** 当前洞段的批次列表（按时间升序，末位为最近一次批次） */
+const batchOptions = computed(() => listBatches(segmentAllStations.value))
+
+// 切换洞段：默认查看该洞段最近一次批次
+watch(
+  () => selectedSegmentId.value,
+  () => {
+    const labels = batchOptions.value.map((batch) => batch.label)
+    selectedBatch.value = labels.length > 0 ? labels[labels.length - 1] : ''
+  },
+  { immediate: true }
+)
+
+// 批次列表变化（水合完成、当前批次最后一条测点被移除等）：回落到最近一批
+watch(
+  () => batchOptions.value.map((batch) => batch.label).join('|'),
+  () => {
+    const labels = batchOptions.value.map((batch) => batch.label)
+    if (labels.length === 0) {
+      selectedBatch.value = ''
+    } else if (!labels.includes(selectedBatch.value)) {
+      selectedBatch.value = labels[labels.length - 1]
+    }
+  }
+)
+
+/** 当前批次测点：草图折线只统计该批次，历史批次可切换查看 */
+const segmentStations = computed<Station[]>(() => stationsOfBatch(segmentAllStations.value, selectedBatch.value))
 
 /** 测点折线：以起点为原点，按方位角/水平距投影到平面坐标 */
 interface PlotPoint {
@@ -186,7 +218,7 @@ async function removeSketch(sketch: Sketch): Promise<void> {
       <div>
         <h2 class="page-title">草图工作台</h2>
         <p class="page-sub">
-          在坐标纸网格上按测点折线绘制洞段平面草图，标注测点桩号与倾角箭头；网格比例与草图记录一一对应。
+          在坐标纸网格上按测点折线绘制洞段平面草图，标注测点桩号与倾角箭头；折线只统计当前批次测点，历史批次可切换查看。
         </p>
       </div>
       <el-tag type="info" effect="plain">当前比例 1 : {{ form.scale }}</el-tag>
@@ -199,7 +231,20 @@ async function removeSketch(sketch: Sketch): Promise<void> {
       <el-select v-model="selectedSegmentId" placeholder="选择洞段" style="width: 220px">
         <el-option v-for="segment in segmentOptions" :key="segment.id" :label="segment.code" :value="segment.id" />
       </el-select>
-      <el-tag effect="plain">测点 {{ segmentStations.length }} 个</el-tag>
+      <el-select
+        v-model="selectedBatch"
+        placeholder="选择批次"
+        style="width: 190px"
+        :disabled="batchOptions.length === 0"
+      >
+        <el-option
+          v-for="batch in batchOptions"
+          :key="batch.label"
+          :label="`${batch.label} · ${batch.count} 站`"
+          :value="batch.label"
+        />
+      </el-select>
+      <el-tag effect="plain">本批次测点 {{ segmentStations.length }} 个</el-tag>
       <el-tag effect="plain">草图 {{ segmentSketches.length }} 张</el-tag>
       <div class="base-bearing">
         <BearingInput v-model="baseBearing" kind="bearing" label="草图基准方位" @invalid="(msg: string) => ElMessage.warning(msg)" />
@@ -235,8 +280,8 @@ async function removeSketch(sketch: Sketch): Promise<void> {
         <text :x="PAD - 30" :y="CANVAS_H - 12" font-size="11" fill="#8a97a3">
           起点 K0
         </text>
-        <text v-if="plotPoints.length === 0" :x="CANVAS_W / 2 - 90" :y="CANVAS_H / 2" font-size="13" fill="#8a97a3">
-          该洞段暂无测点，请先到「测点读数」录入
+        <text v-if="plotPoints.length === 0" :x="CANVAS_W / 2 - 110" :y="CANVAS_H / 2" font-size="13" fill="#8a97a3">
+          当前批次暂无测点，请先到「测点读数」录入或切换批次
         </text>
         <defs>
           <marker id="dipArrowHead" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">

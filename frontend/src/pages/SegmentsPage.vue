@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { Segment, SegmentType } from '@/types'
+import type { ClosureResult, Segment, SegmentType } from '@/types'
 import { SEGMENT_TYPES, segmentLength } from '@/types'
 import SegmentTag from '@/components/common/SegmentTag.vue'
 import { useStore } from '@/hooks/usePersistentStore'
 import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
-import { stakeRangeOverlap, stakeToNumber } from '@/utils/survey'
+import { computeClosure, stakeRangeOverlap, stakeToNumber } from '@/utils/survey'
+import { latestBatchStations, listBatches, type BatchInfo } from '@/utils/batch'
 import { uid } from '@/utils/id'
 
 const caveState = useStore(caveStore)
@@ -61,6 +62,22 @@ function caveName(caveId: string): string {
 
 function stationCount(segmentId: string): number {
   return stationState.stations.filter((station) => station.segmentId === segmentId).length
+}
+
+/** 最新一批测量（复测时只展示最新批次，历史批次不参与当前结果） */
+function latestBatchOf(segmentId: string): BatchInfo | null {
+  const batches = listBatches(stationState.stations.filter((station) => station.segmentId === segmentId))
+  return batches.length > 0 ? batches[batches.length - 1] : null
+}
+
+/** 最新批次的闭合状态 */
+function latestClosureOf(segmentId: string): ClosureResult | null {
+  const stations = latestBatchStations(stationState.stations.filter((station) => station.segmentId === segmentId))
+  return stations.length > 0 ? computeClosure(stations) : null
+}
+
+function closureTagType(level: ClosureResult['level']): 'success' | 'warning' | 'danger' {
+  return level === '优' ? 'success' : level === '良' ? 'warning' : 'danger'
 }
 
 function resetForm(): void {
@@ -165,7 +182,7 @@ async function removeSegment(segment: Segment): Promise<void> {
       <div>
         <h2 class="page-title">洞段编目表</h2>
         <p class="page-sub">
-          按桩号区间筛选洞段、批量调整洞段类型；洞段长度由起止桩号自动计算，并累计为洞穴实测总长。
+          按桩号区间筛选洞段、批量调整洞段类型；列表展示最新测量批次的日期、站数与闭合状态，洞段长度由起止桩号自动计算。
         </p>
       </div>
       <el-button type="primary" @click="openCreate">
@@ -226,8 +243,27 @@ async function removeSegment(segment: Segment): Promise<void> {
         <template #default="{ row }: { row: Segment }">{{ row.avgWidth }} × {{ row.avgHeight }}</template>
       </el-table-column>
       <el-table-column prop="slopeTrend" label="坡度趋势" width="120" />
-      <el-table-column label="测点数" width="90">
-        <template #default="{ row }: { row: Segment }">{{ stationCount(row.id) }}</template>
+      <el-table-column label="最新批次" width="160">
+        <template #default="{ row }: { row: Segment }">
+          <template v-if="latestBatchOf(row.id)">
+            <div>{{ latestBatchOf(row.id)!.date || '—' }}</div>
+            <div class="muted">
+              {{ latestBatchOf(row.id)!.count }} 站<template v-if="latestBatchOf(row.id)!.label !== latestBatchOf(row.id)!.date"> · {{ latestBatchOf(row.id)!.label }}</template>
+            </div>
+          </template>
+          <span v-else class="muted">暂无测点</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="闭合状态" width="110">
+        <template #default="{ row }: { row: Segment }">
+          <template v-if="latestClosureOf(row.id)">
+            <el-tag :type="closureTagType(latestClosureOf(row.id)!.level)" size="small" effect="plain">
+              {{ latestClosureOf(row.id)!.level }}
+            </el-tag>
+            <div class="muted">f={{ latestClosureOf(row.id)!.closure.toFixed(3) }} m</div>
+          </template>
+          <span v-else class="muted">—</span>
+        </template>
       </el-table-column>
       <el-table-column prop="sketchNo" label="草图序号" width="100" />
       <el-table-column label="操作" width="140" fixed="right">
