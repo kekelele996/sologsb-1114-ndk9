@@ -10,6 +10,7 @@ import { useClosureCheck } from '@/hooks/useClosureCheck'
 import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
+import { batchStore, latestBatchOfSegment } from '@/stores/batchStore'
 import { sketchStore } from '@/stores/sketchStore'
 import { downloadCsv } from '@/utils/export'
 import { stakeToNumber } from '@/utils/survey'
@@ -22,6 +23,7 @@ const PX_PER_METER = 1.6
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
+const batchState = useStore(batchStore)
 const sketchState = useStore(sketchStore)
 
 const selectedCaveId = ref<string>(caveState.caves[0]?.id ?? '')
@@ -78,12 +80,15 @@ watch(
   { immediate: true }
 )
 
-/** 洞段测点闭合差（拼合视图复用闭合差徽标） */
-const caveStations = computed(() =>
-  stationState.stations.filter((station) =>
-    caveSegments.value.some((segment) => segment.id === station.segmentId)
+/** 洞段测点闭合差（拼合视图复用闭合差徽标）：只汇总各洞段最新批次，历史批次不参与 */
+const caveStations = computed(() => {
+  const latestBatchIds = new Set(
+    caveSegments.value
+      .map((segment) => latestBatchOfSegment(batchState.batches, segment.id)?.id)
+      .filter((id): id is string => !!id)
   )
-)
+  return stationState.stations.filter((station) => latestBatchIds.has(station.batchId))
+})
 const { result: closureResult } = useClosureCheck(caveStations)
 
 /** 按桩号锚点自动吸附：以最小锚点桩号为原点，按桩号差换算横向偏移 */

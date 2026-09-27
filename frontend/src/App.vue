@@ -5,12 +5,14 @@ import { useStore } from '@/hooks/usePersistentStore'
 import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
+import { batchStore } from '@/stores/batchStore'
 import { sketchStore } from '@/stores/sketchStore'
 
 const route = useRoute()
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
+const batchState = useStore(batchStore)
 const sketchState = useStore(sketchStore)
 
 const menus = [
@@ -27,12 +29,14 @@ const stats = computed(() => [
   { label: '洞穴', value: caveState.caves.filter((cave) => !cave.archived).length },
   { label: '洞段', value: segmentState.segments.length },
   { label: '测点', value: stationState.stations.length },
+  { label: '批次', value: batchState.batches.length },
   { label: '草图', value: sketchState.sketches.length }
 ])
 
 onMounted(async () => {
   await caveStore.getState().hydrate()
   await segmentStore.getState().hydrate()
+  await batchStore.getState().hydrate()
   await stationStore.getState().hydrate()
   await sketchStore.getState().hydrate()
 })

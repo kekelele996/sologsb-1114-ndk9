@@ -1,19 +1,21 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { Segment, SegmentType } from '@/types'
+import type { ClosureResult, Segment, SegmentType } from '@/types'
 import { SEGMENT_TYPES, segmentLength } from '@/types'
 import SegmentTag from '@/components/common/SegmentTag.vue'
 import { useStore } from '@/hooks/usePersistentStore'
 import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
-import { stakeRangeOverlap, stakeToNumber } from '@/utils/survey'
+import { batchStore, latestBatchOfSegment } from '@/stores/batchStore'
+import { computeClosure, stakeRangeOverlap, stakeToNumber } from '@/utils/survey'
 import { uid } from '@/utils/id'
 
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
+const batchState = useStore(batchStore)
 
 const filterCaveId = ref<string>('')
 const filterType = ref<SegmentType | ''>('')
@@ -61,6 +63,44 @@ function caveName(caveId: string): string {
 
 function stationCount(segmentId: string): number {
   return stationState.stations.filter((station) => station.segmentId === segmentId).length
+}
+
+/** 最新批次摘要：日期、站数与闭合状态；历史批次不参与当前结果 */
+interface BatchSummary {
+  label: string
+  date: string
+  count: number
+  closure: ClosureResult | null
+}
+
+const batchSummaries = computed<Record<string, BatchSummary>>(() => {
+  const map: Record<string, BatchSummary> = {}
+  for (const segment of segmentState.segments) {
+    const batch = latestBatchOfSegment(batchState.batches, segment.id)
+    if (!batch) continue
+    const stations = stationState.stations.filter((station) => station.batchId === batch.id)
+    map[segment.id] = {
+      label: batch.label,
+      date: batch.date,
+      count: stations.length,
+      closure: stations.length > 0 ? computeClosure(stations) : null
+    }
+  }
+  return map
+})
+
+function summaryOf(segmentId: string): BatchSummary | undefined {
+  return batchSummaries.value[segmentId]
+}
+
+function closureTagType(summary: BatchSummary): 'success' | 'danger' | 'info' {
+  if (!summary.closure) return 'info'
+  return summary.closure.over ? 'danger' : 'success'
+}
+
+function closureText(summary: BatchSummary): string {
+  if (!summary.closure) return '暂无测点'
+  return `${summary.closure.over ? '闭合超限' : '闭合正常'} f=${summary.closure.closure.toFixed(3)}m`
 }
 
 function resetForm(): void {
@@ -165,7 +205,7 @@ async function removeSegment(segment: Segment): Promise<void> {
       <div>
         <h2 class="page-title">洞段编目表</h2>
         <p class="page-sub">
-          按桩号区间筛选洞段、批量调整洞段类型；洞段长度由起止桩号自动计算，并累计为洞穴实测总长。
+          按桩号区间筛选洞段、批量调整洞段类型；洞段长度由起止桩号自动计算，并显示最新批次的日期、站数与闭合状态。
         </p>
       </div>
       <el-button type="primary" @click="openCreate">
@@ -226,8 +266,16 @@ async function removeSegment(segment: Segment): Promise<void> {
         <template #default="{ row }: { row: Segment }">{{ row.avgWidth }} × {{ row.avgHeight }}</template>
       </el-table-column>
       <el-table-column prop="slopeTrend" label="坡度趋势" width="120" />
-      <el-table-column label="测点数" width="90">
-        <template #default="{ row }: { row: Segment }">{{ stationCount(row.id) }}</template>
+      <el-table-column label="最新批次" width="210">
+        <template #default="{ row }: { row: Segment }">
+          <template v-if="summaryOf(row.id)">
+            <div>{{ summaryOf(row.id)!.label }} · {{ summaryOf(row.id)!.date }} · {{ summaryOf(row.id)!.count }} 站</div>
+            <el-tag :type="closureTagType(summaryOf(row.id)!)" size="small" effect="plain">
+              {{ closureText(summaryOf(row.id)!) }}
+            </el-tag>
+          </template>
+          <span v-else class="muted">暂无批次</span>
+        </template>
       </el-table-column>
       <el-table-column prop="sketchNo" label="草图序号" width="100" />
       <el-table-column label="操作" width="140" fixed="right">

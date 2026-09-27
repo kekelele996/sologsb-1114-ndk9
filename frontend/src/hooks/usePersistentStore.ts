@@ -1,23 +1,24 @@
 import { onUnmounted, reactive } from 'vue'
 import type { StoreApi } from 'zustand/vanilla'
 import Dexie, { type Table } from 'dexie'
-import type { Cave, Segment, Sketch, Station } from '@/types'
+import type { Cave, Segment, Sketch, Station, SurveyBatch } from '@/types'
 import { computeHorizontal, computeVertical } from '@/utils/survey'
 
 /** IndexedDB 数据结构版本号（升级迁移时使用） */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
   value: number
 }
 
-/** Dexie 封装：洞穴 / 洞段 / 测点 / 草图 四张表 + 元数据表 */
+/** Dexie 封装：洞穴 / 洞段 / 测点 / 草图 / 测量批次 五张表 + 元数据表 */
 class CaveSurveyDb extends Dexie {
   caves!: Table<Cave, string>
   segments!: Table<Segment, string>
   stations!: Table<Station, string>
   sketches!: Table<Sketch, string>
+  batches!: Table<SurveyBatch, string>
   meta!: Table<MetaRow, string>
 
   constructor() {
@@ -30,7 +31,7 @@ class CaveSurveyDb extends Dexie {
       meta: 'key'
     })
     // v2：旧版测点记录缺少水平距/垂距，迁移时由斜距 + 倾角补齐
-    this.version(SCHEMA_VERSION)
+    this.version(2)
       .stores({
         caves: 'id, name, region, archived',
         segments: 'id, caveId, code, type',
@@ -50,6 +51,45 @@ class CaveSurveyDb extends Dexie {
               station.verticalDistance = computeVertical(station.dip, station.slopeDistance)
             }
           })
+      })
+    // v3：测点按测量批次管理。旧记录以「洞段 + 测量日期」归并为批次，原数据保留可用
+    this.version(SCHEMA_VERSION)
+      .stores({
+        caves: 'id, name, region, archived',
+        segments: 'id, caveId, code, type',
+        stations: 'id, segmentId, code, date, batchId',
+        sketches: 'id, segmentId, code, mergeOrder',
+        batches: 'id, segmentId, date',
+        meta: 'key'
+      })
+      .upgrade(async (tx) => {
+        const stations = await tx.table<Station, string>('stations').toArray()
+        // 按洞段分组，组内再按测量日期归批；批次 id 由洞段与日期确定性生成，保证迁移幂等
+        const bySegment = new Map<string, Station[]>()
+        for (const station of stations) {
+          const list = bySegment.get(station.segmentId) ?? []
+          list.push(station)
+          bySegment.set(station.segmentId, list)
+        }
+        const batches: SurveyBatch[] = []
+        for (const [segmentId, list] of bySegment) {
+          const dates = [...new Set(list.map((station) => station.date || '未填日期'))].sort()
+          dates.forEach((date, index) => {
+            const parsed = new Date(`${date}T00:00:00`)
+            batches.push({
+              id: `batch_${segmentId}_${date}`,
+              segmentId,
+              date,
+              label: `第${index + 1}批`,
+              createdAt: Number.isNaN(parsed.getTime()) ? new Date(0).toISOString() : parsed.toISOString()
+            })
+          })
+          for (const station of list) {
+            station.batchId = `batch_${segmentId}_${station.date || '未填日期'}`
+          }
+        }
+        await tx.table<SurveyBatch, string>('batches').bulkPut(batches)
+        await tx.table<Station, string>('stations').bulkPut(stations)
       })
   }
 }
@@ -97,7 +137,7 @@ export function useStore<T extends object>(store: StoreApi<T>): T {
 
 /**
  * 首次打开时写入一套示例洞穴数据，保证各页面进入即有事可做。
- * 只在四张表都为空时执行一次。
+ * 只在洞穴表为空时执行一次。
  */
 export async function seedDemoData(): Promise<void> {
   const caveCount = await db.caves.count()
@@ -108,6 +148,7 @@ export async function seedDemoData(): Promise<void> {
   const segmentB = 'seg_demo_002'
 
   const today = new Date().toISOString().slice(0, 10)
+  const lastWeek = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().slice(0, 10)
 
   await db.caves.put({
     id: caveId,
@@ -154,10 +195,60 @@ export async function seedDemoData(): Promise<void> {
     }
   ])
 
+  await db.batches.bulkPut([
+    {
+      id: 'batch_demo_001',
+      segmentId: segmentA,
+      date: lastWeek,
+      label: '第1批',
+      createdAt: new Date(`${lastWeek}T00:00:00`).toISOString()
+    },
+    {
+      id: 'batch_demo_002',
+      segmentId: segmentA,
+      date: today,
+      label: '第2批',
+      createdAt: new Date(`${today}T00:00:00`).toISOString()
+    }
+  ])
+
   await db.stations.bulkPut([
+    {
+      id: 'st_demo_000',
+      segmentId: segmentA,
+      batchId: 'batch_demo_001',
+      code: 'P1',
+      bearing: 117.9,
+      dip: -2.7,
+      slopeDistance: 12.5,
+      horizontalDistance: computeHorizontal(-2.7, 12.5),
+      verticalDistance: computeVertical(-2.7, 12.5),
+      instrumentNo: 'SOKKIA-2',
+      surveyor: '陆昀',
+      date: lastWeek,
+      isClosurePoint: false,
+      note: '首批测量，入口段'
+    },
+    {
+      id: 'st_demo_00h',
+      segmentId: segmentA,
+      batchId: 'batch_demo_001',
+      code: 'P2',
+      bearing: 120.8,
+      dip: -2.1,
+      slopeDistance: 15.6,
+      horizontalDistance: computeHorizontal(-2.1, 15.6),
+      verticalDistance: computeVertical(-2.1, 15.6),
+      instrumentNo: 'SOKKIA-2',
+      surveyor: '陆昀',
+      date: lastWeek,
+      isClosurePoint: true,
+      note: '首批测量末站'
+    },
     {
       id: 'st_demo_001',
       segmentId: segmentA,
+      batchId: 'batch_demo_002',
       code: 'P1',
       bearing: 118.5,
       dip: -2.5,
@@ -168,11 +259,12 @@ export async function seedDemoData(): Promise<void> {
       surveyor: '陆昀',
       date: today,
       isClosurePoint: false,
-      note: '入口段，左壁有崩塌堆积'
+      note: '复测：入口段，左壁有崩塌堆积'
     },
     {
       id: 'st_demo_002',
       segmentId: segmentA,
+      batchId: 'batch_demo_002',
       code: 'P2',
       bearing: 121.2,
       dip: -1.8,
@@ -183,7 +275,7 @@ export async function seedDemoData(): Promise<void> {
       surveyor: '陆昀',
       date: today,
       isClosurePoint: true,
-      note: '本段末站，已与 C-02 起点核对'
+      note: '复测：本段末站，已与 C-02 起点核对'
     }
   ])
 

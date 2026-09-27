@@ -8,6 +8,7 @@ import { useStore } from '@/hooks/usePersistentStore'
 import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
+import { batchStore, batchesOfSegment } from '@/stores/batchStore'
 import { sketchStore } from '@/stores/sketchStore'
 import { toRadians } from '@/utils/survey'
 import { uid } from '@/utils/id'
@@ -15,6 +16,7 @@ import { uid } from '@/utils/id'
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
+const batchState = useStore(batchStore)
 const sketchState = useStore(sketchStore)
 
 const CANVAS_W = 760
@@ -23,6 +25,7 @@ const PAD = 46
 
 const selectedCaveId = ref<string>(caveState.caves[0]?.id ?? '')
 const selectedSegmentId = ref<string>('')
+const selectedBatchId = ref<string>('')
 const editingId = ref<string | null>(null)
 /** 草图朝向基准方位角：把洞段整体旋转到图纸正上方为前进方向 */
 const baseBearing = ref(0)
@@ -64,9 +67,24 @@ watch(
   { immediate: true }
 )
 
+/** 当前洞段的批次（按创建时间升序），折线默认取最近一次批次 */
+const segmentBatches = computed(() => batchesOfSegment(batchState.batches, selectedSegmentId.value))
+
+// 切换洞段或批次变化时，默认沿用最近一次批次
+watch(
+  () => [selectedSegmentId.value, segmentBatches.value.length] as const,
+  () => {
+    if (!segmentBatches.value.some((batch) => batch.id === selectedBatchId.value)) {
+      selectedBatchId.value = segmentBatches.value[segmentBatches.value.length - 1]?.id ?? ''
+    }
+  },
+  { immediate: true }
+)
+
+/** 草图折线只统计当前批次的测点，历史批次读数不混入 */
 const segmentStations = computed<Station[]>(() =>
   stationState.stations
-    .filter((station) => station.segmentId === selectedSegmentId.value)
+    .filter((station) => station.batchId === selectedBatchId.value)
     .sort((a, b) => Number((a.code.match(/\d+/) ?? ['0'])[0]) - Number((b.code.match(/\d+/) ?? ['0'])[0]))
 )
 
@@ -199,6 +217,14 @@ async function removeSketch(sketch: Sketch): Promise<void> {
       <el-select v-model="selectedSegmentId" placeholder="选择洞段" style="width: 220px">
         <el-option v-for="segment in segmentOptions" :key="segment.id" :label="segment.code" :value="segment.id" />
       </el-select>
+      <el-select v-model="selectedBatchId" placeholder="选择测量批次" style="width: 210px">
+        <el-option
+          v-for="batch in segmentBatches"
+          :key="batch.id"
+          :label="`${batch.label} · ${batch.date}`"
+          :value="batch.id"
+        />
+      </el-select>
       <el-tag effect="plain">测点 {{ segmentStations.length }} 个</el-tag>
       <el-tag effect="plain">草图 {{ segmentSketches.length }} 张</el-tag>
       <div class="base-bearing">
@@ -236,7 +262,7 @@ async function removeSketch(sketch: Sketch): Promise<void> {
           起点 K0
         </text>
         <text v-if="plotPoints.length === 0" :x="CANVAS_W / 2 - 90" :y="CANVAS_H / 2" font-size="13" fill="#8a97a3">
-          该洞段暂无测点，请先到「测点读数」录入
+          该批次暂无测点，请先到「测点读数」录入
         </text>
         <defs>
           <marker id="dipArrowHead" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">
